@@ -1,0 +1,39 @@
+Page Tables Lab Answers
+
+1. Speed up system calls
+
+The uptime system call could also be accelerated with a shared read-only
+page. The kernel could keep the current tick count in this page, allowing a
+user process to obtain the system uptime without executing an ecall or
+entering the kernel.
+
+This optimization is suitable for small, frequently requested, read-only
+values that do not require permission checks or changes to kernel state.
+System calls such as read, write, fork, and sbrk cannot be replaced in this
+way because they access kernel-managed objects, validate arguments, or
+modify system state.
+
+2. Print a page table
+
+The output of vmprint represents the three-level Sv39 page-table tree. The
+first line shows the address of the root page table. Each additional " .."
+indentation indicates one level deeper in the tree. Entries at the first
+and second levels point to lower-level page tables, while valid leaf entries
+at the third level map virtual pages to physical pages and contain their
+permission bits. Invalid PTEs are not printed.
+
+Page 0 contains the init program's code and data.
+
+Page 1 is the guard page below the user stack. Although it has a valid
+mapping, exec clears its PTE_U bit with uvmclear(). A process running in
+user mode therefore cannot read or write this page. An attempted access
+causes a page fault and helps detect a user-stack overflow.
+
+Page 2 contains the initial user stack. It stores command-line argument
+strings, the argv array, argc, the return address for main, and other stack
+data created by exec.
+
+In this lab, the third-to-last page is USYSCALL. It contains a struct
+usyscall whose pid field stores the current process ID. The page is mapped
+with PTE_U and PTE_R, so user code can read it through ugetpid() but cannot
+modify it. The last two pages are TRAPFRAME and TRAMPOLINE, respectively.
