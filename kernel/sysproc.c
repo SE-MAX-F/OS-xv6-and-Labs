@@ -77,10 +77,63 @@ sys_sleep(void)
 
 
 #ifdef LAB_PGTBL
-int
+uint64
 sys_pgaccess(void)
 {
-  // lab pgtbl: your code here.
+  uint64 base;
+  uint64 user_mask;
+  int npages;
+  uint mask;
+  pte_t *pte;
+  struct proc *p;
+
+  if(argaddr(0, &base) < 0)
+    return -1;
+  if(argint(1, &npages) < 0)
+    return -1;
+  if(argaddr(2, &user_mask) < 0)
+    return -1;
+
+  // One 32-bit mask can describe at most 32 pages.
+  if(npages < 0 || npages > 32)
+    return -1;
+
+  base = PGROUNDDOWN(base);
+
+  // Prevent walk() from receiving an address outside Sv39.
+  if(base >= MAXVA)
+    return -1;
+  if((uint64)npages > (MAXVA - base) / PGSIZE)
+    return -1;
+
+  p = myproc();
+  mask = 0;
+
+  for(int i = 0; i < npages; i++){
+    uint64 va = base + (uint64)i * PGSIZE;
+
+    pte = walk(p->pagetable, va, 0);
+    if(pte == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+
+    if(*pte & PTE_A){
+      mask |= (1U << i);
+      *pte &= ~PTE_A;
+    }
+  }
+
+  // Ensure later accesses cause the hardware to observe
+  // the cleared access bits.
+  sfence_vma();
+
+  if(copyout(p->pagetable, user_mask,
+             (char *)&mask, sizeof(mask)) < 0)
+    return -1;
+
   return 0;
 }
 #endif
