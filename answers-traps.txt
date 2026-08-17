@@ -1,0 +1,42 @@
+Traps Lab Answers
+
+1. RISC-V assembly
+
+Function arguments are passed in registers a0, a1, a2, and so on. In main's
+call to printf, register a2 holds 13.
+
+There is no call to f or g in the assembly code for main. The compiler
+inlines both functions and evaluates f(8)+1 at compile time, so main loads
+the constant 12 into a1 with "li a1,12". Function f also does not call g;
+it directly performs the "x+3" computation.
+
+The function printf is located at address 0x616.
+
+Just after the jalr to printf in main, register ra contains 0x38, the
+address of the next instruction, which starts exit(0).
+
+The output of
+
+    unsigned int i = 0x00646c72;
+    printf("H%x Wo%s", 57616, &i);
+
+is
+
+    HE110 World
+
+57616 is 0xE110, and xv6 prints %x in uppercase. Because RISC-V is
+little-endian, the bytes of i in memory are 0x72, 0x6c, 0x64, and 0x00,
+which form the C string "rld".
+
+If RISC-V were big-endian, i should be set to 0x726c6400 so that memory
+still contains the bytes 0x72, 0x6c, 0x64, and 0x00. 57616 would not need
+to change, because %x prints the integer value, which does not depend on
+endianness.
+
+After "y=" in
+
+    printf("x=%d y=%d", 3);
+
+the printed value is not determined. The format string expects two integers,
+but only one argument is passed. 3 is placed in a1 for the first %d, so the
+second %d prints whatever leftover value happens to be in a2.
