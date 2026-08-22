@@ -1,0 +1,15 @@
+Using threads answers
+
+When two threads insert different keys into the same hash bucket, they can
+both read the same old value of table[i]. For example, both threads may find
+that the bucket is empty. Thread A can then be interrupted before it stores
+its new entry. Thread B inserts its entry and updates table[i]. When thread A
+resumes, it stores its entry using the stale value of table[i], overwriting
+thread B's entry. The entry inserted by thread B is then lost, which causes
+the missing-key count to be nonzero.
+
+A lock is needed around the lookup and insertion of a bucket. Using one lock
+for the entire hash table makes the program correct but prevents independent
+buckets from being updated in parallel. Therefore, the final solution uses
+one mutex per bucket. Operations on different buckets can then proceed in
+parallel while operations on the same bucket remain mutually exclusive.
