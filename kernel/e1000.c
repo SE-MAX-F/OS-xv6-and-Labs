@@ -95,26 +95,80 @@ e1000_init(uint32 *xregs)
 int
 e1000_transmit(struct mbuf *m)
 {
-  //
-  // Your code here.
-  //
-  // the mbuf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after sending.
-  //
-  
+  acquire(&e1000_lock);
+
+  // Ask the E1000 for the index of the next transmit descriptor.
+  uint32 idx = regs[E1000_TDT];
+  struct tx_desc *desc = &tx_ring[idx];
+
+  // Check whether the descriptor is still being used by the E1000.
+  if ((desc->status & E1000_TXD_STAT_DD) == 0) {
+    release(&e1000_lock);
+    return -1;
+  }
+
+  // Free the mbuf associated with the previous transmission.
+  if (tx_mbufs[idx])
+    mbuffree(tx_mbufs[idx]);
+
+  // Fill in the transmit descriptor.
+  desc->addr = (uint64)m->head;
+  desc->length = m->len;
+  desc->cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+
+  // Keep the mbuf until the E1000 finishes transmitting it.
+  tx_mbufs[idx] = m;
+
+  // Ensure descriptor contents are visible before notifying the E1000.
+  __sync_synchronize();
+
+  // Move to the next descriptor in the ring.
+  regs[E1000_TDT] = (idx + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
   return 0;
 }
 
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver an mbuf for each packet (using net_rx()).
-  //
+  while (1) {
+    acquire(&e1000_lock);
+
+    // RDT points to the last descriptor processed by the driver.
+    uint32 idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    struct rx_desc *desc = &rx_ring[idx];
+
+    // Stop if the E1000 has not filled this descriptor yet.
+    if ((desc->status & E1000_RXD_STAT_DD) == 0) {
+      release(&e1000_lock);
+      return;
+    }
+
+    // The received packet is stored in the mbuf associated with this descriptor.
+    struct mbuf *m = rx_mbufs[idx];
+    m->len = desc->length;
+
+    // Allocate a new mbuf for future DMA operations.
+    rx_mbufs[idx] = mbufalloc(0);
+    if (rx_mbufs[idx] == 0)
+      panic("e1000_recv");
+
+    // Replace the descriptor's buffer and clear its status.
+    desc->addr = (uint64)rx_mbufs[idx]->head;
+    desc->status = 0;
+
+    // Ensure the replacement buffer is visible before updating RDT.
+    __sync_synchronize();
+
+    // Tell the E1000 that this descriptor is available again.
+    regs[E1000_RDT] = idx;
+
+    release(&e1000_lock);
+
+    // Do not hold e1000_lock while entering the network stack.
+    net_rx(m);
+  }
 }
 
 void
