@@ -64,24 +64,34 @@ bzero(int dev, int bno)
 static uint
 balloc(uint dev)
 {
-  int b, bi, m;
+  int b, bi, bit, m, byte;
   struct buf *bp;
 
-  bp = 0;
   for(b = 0; b < sb.size; b += BPB){
     bp = bread(dev, BBLOCK(b, sb));
-    for(bi = 0; bi < BPB && b + bi < sb.size; bi++){
-      m = 1 << (bi % 8);
-      if((bp->data[bi/8] & m) == 0){  // Is block free?
-        bp->data[bi/8] |= m;  // Mark block in use.
-        log_write(bp);
-        brelse(bp);
-        bzero(dev, b + bi);
-        return b + bi;
+
+    for(bi = 0; bi < BPB && b + bi < sb.size; bi += 8){
+      byte = bp->data[bi / 8] & 0xff;
+
+      if(byte == 0xff)
+        continue;
+
+      for(bit = 0; bit < 8 && b + bi + bit < sb.size; bit++){
+        m = 1 << bit;
+
+        if((byte & m) == 0){
+          bp->data[bi / 8] |= m;
+          log_write(bp);
+          brelse(bp);
+          bzero(dev, b + bi + bit);
+          return b + bi + bit;
+        }
       }
     }
+
     brelse(bp);
   }
+
   panic("balloc: out of blocks");
 }
 
