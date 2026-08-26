@@ -25,6 +25,7 @@
 // there should be one superblock per disk device, but we run with
 // only one device
 struct superblock sb; 
+static uint balloc_hint; // Search position for the next free block.
 
 // Read the super block.
 static void
@@ -52,8 +53,7 @@ bzero(int dev, int bno)
 {
   struct buf *bp;
 
-  bp = bread(dev, bno);
-  memset(bp->data, 0, BSIZE);
+  bp = bgetzero(dev, bno);
   log_write(bp);
   brelse(bp);
 }
@@ -64,32 +64,46 @@ bzero(int dev, int bno)
 static uint
 balloc(uint dev)
 {
-  int b, bi, bit, m, byte;
+  uint pass, start, end, b, bi, first, last, m;
   struct buf *bp;
 
-  for(b = 0; b < sb.size; b += BPB){
-    bp = bread(dev, BBLOCK(b, sb));
+  for(pass = 0; pass < 2; pass++){
+    if(pass == 0){
+      start = balloc_hint;
+      end = sb.size;
+    } else {
+      start = 0;
+      end = balloc_hint;
+    }
 
-    for(bi = 0; bi < BPB && b + bi < sb.size; bi += 8){
-      byte = bp->data[bi / 8] & 0xff;
+    if(start >= end)
+      continue;
 
-      if(byte == 0xff)
-        continue;
+    for(b = (start / BPB) * BPB; b < end; b += BPB){
+      first = (b < start) ? start - b : 0;
+      last = (b + BPB < end) ? BPB : end - b;
 
-      for(bit = 0; bit < 8 && b + bi + bit < sb.size; bit++){
-        m = 1 << bit;
+      bp = bread(dev, BBLOCK(b, sb));
 
-        if((byte & m) == 0){
+      for(bi = first; bi < last; bi++){
+        m = 1 << (bi % 8);
+
+        if((bp->data[bi / 8] & m) == 0){
           bp->data[bi / 8] |= m;
           log_write(bp);
           brelse(bp);
-          bzero(dev, b + bi + bit);
-          return b + bi + bit;
+
+          balloc_hint = b + bi + 1;
+          if(balloc_hint >= sb.size)
+            balloc_hint = 0;
+
+          bzero(dev, b + bi);
+          return b + bi;
         }
       }
-    }
 
-    brelse(bp);
+      brelse(bp);
+    }
   }
 
   panic("balloc: out of blocks");

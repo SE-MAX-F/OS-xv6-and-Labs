@@ -88,6 +88,18 @@ bget(uint dev, uint blockno)
   panic("bget: no buffers");
 }
 
+// Get a locked, zero-filled buffer without reading the old disk contents.
+struct buf*
+bgetzero(uint dev, uint blockno)
+{
+  struct buf *b;
+
+  b = bget(dev, blockno);
+  memset(b->data, 0, BSIZE);
+  b->valid = 1;
+  return b;
+}
+
 // Return a locked buf with the contents of the indicated block.
 struct buf*
 bread(uint dev, uint blockno)
