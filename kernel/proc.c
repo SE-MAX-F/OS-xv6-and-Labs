@@ -3,8 +3,11 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -163,6 +166,10 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+
+  for(int i = 0; i < NVMA; i++)
+    memset(&p->vmas[i], 0, sizeof(p->vmas[i]));
+
   p->state = UNUSED;
 }
 
@@ -289,6 +296,14 @@ fork(void)
   }
   np->sz = p->sz;
 
+  // Copy the parent's VMA entries and increment file references.
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].used){
+      np->vmas[i] = p->vmas[i];
+      np->vmas[i].file = filedup(p->vmas[i].file);
+    }
+  }
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -343,6 +358,17 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // Unmap all VMAs when the process exits.
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].used){
+      mmap_unmap(p, &p->vmas[i],
+                 p->vmas[i].addr,
+                 p->vmas[i].length);
+      fileclose(p->vmas[i].file);
+      memset(&p->vmas[i], 0, sizeof(p->vmas[i]));
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

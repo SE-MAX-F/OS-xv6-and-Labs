@@ -5,6 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "proc.h"
+#include "file.h"
+#include "fcntl.h"
 
 /*
  * the kernel's page table.
@@ -184,6 +189,40 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     }
     *pte = 0;
   }
+}
+
+int
+mmap_unmap(struct proc *p, struct vma *vma, uint64 addr, uint64 length)
+{
+  uint64 a;
+  int result = 0;
+
+  for(a = addr; a < addr + length; a += PGSIZE){
+    pte_t *pte = walk(p->pagetable, a, 0);
+
+    // The page may never have triggered a page fault.
+    if(pte == 0 || (*pte & PTE_V) == 0)
+      continue;
+
+    // Write back only writable MAP_SHARED pages.
+    if(vma->flags == MAP_SHARED && (vma->prot & PROT_WRITE)){
+      uint64 pa = PTE2PA(*pte);
+      uint offset = (uint)(vma->offset + (a - vma->addr));
+
+      begin_op();
+      ilock(vma->file->ip);
+
+      if(writei(vma->file->ip, 0, pa, offset, PGSIZE) != PGSIZE)
+        result = -1;
+
+      iunlock(vma->file->ip);
+      end_op();
+    }
+
+    uvmunmap(p->pagetable, a, 1, 1);
+  }
+
+  return result;
 }
 
 // create an empty user page table.

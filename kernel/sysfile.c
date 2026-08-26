@@ -6,6 +6,7 @@
 
 #include "types.h"
 #include "riscv.h"
+#include "memlayout.h"
 #include "defs.h"
 #include "param.h"
 #include "stat.h"
@@ -15,6 +16,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -483,4 +485,153 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int length, prot, flags, offset;
+  uint64 len;
+  struct file *f;
+  struct proc *p = myproc();
+  struct vma *vma = 0;
+  int i;
+
+  if(argaddr(0, &addr) < 0 ||
+     argint(1, &length) < 0 ||
+     argint(2, &prot) < 0 ||
+     argint(3, &flags) < 0 ||
+     argfd(4, 0, &f) < 0 ||
+     argint(5, &offset) < 0)
+    return -1;
+
+  // This lab supports only addr == 0 and offset == 0.
+  if(addr != 0 || length <= 0 || offset != 0)
+    return -1;
+
+  if(flags != MAP_SHARED && flags != MAP_PRIVATE)
+    return -1;
+
+  if(prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC))
+    return -1;
+
+  if(f->type != FD_INODE || !f->readable)
+    return -1;
+
+  // A writable MAP_SHARED mapping requires a writable file.
+  if(flags == MAP_SHARED && (prot & PROT_WRITE) && !f->writable)
+    return -1;
+
+  len = PGROUNDUP((uint64)length);
+
+  if(len == 0 || len >= MAXVA)
+    return -1;
+
+  // Find an unused VMA.
+  for(i = 0; i < NVMA; i++){
+    if(!p->vmas[i].used){
+      vma = &p->vmas[i];
+      break;
+    }
+  }
+
+  if(vma == 0)
+    return -1;
+
+  // Allocate mappings below the fixed trapframe and trampoline pages.
+  addr = TRAPFRAME;
+
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].used && p->vmas[i].addr < addr)
+      addr = p->vmas[i].addr;
+  }
+
+  if(addr < len)
+    return -1;
+
+  addr -= len;
+
+  if(addr < PGROUNDUP(p->sz))
+    return -1;
+
+  vma->addr = addr;
+  vma->length = len;
+  vma->offset = (uint64)offset;
+  vma->prot = prot;
+  vma->flags = flags;
+  vma->file = filedup(f);
+  vma->used = 1;
+
+  return addr;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+  uint64 len;
+  uint64 end;
+  struct proc *p = myproc();
+  struct vma *vma = 0;
+  int i;
+  int result;
+
+  if(argaddr(0, &addr) < 0 ||
+     argint(1, &length) < 0)
+    return -1;
+
+  if(addr % PGSIZE != 0 || length <= 0)
+    return -1;
+
+  len = PGROUNDUP((uint64)length);
+
+  if(addr >= MAXVA || len > MAXVA - addr)
+    return -1;
+
+  end = addr + len;
+
+  // Find the VMA containing the target address range.
+  for(i = 0; i < NVMA; i++){
+    uint64 vma_end;
+
+    if(!p->vmas[i].used)
+      continue;
+
+    vma_end = p->vmas[i].addr + p->vmas[i].length;
+
+    if(addr >= p->vmas[i].addr && end <= vma_end){
+      vma = &p->vmas[i];
+      break;
+    }
+  }
+
+  if(vma == 0)
+    return -1;
+
+  // This lab supports unmapping from the beginning,
+  // the end, or the entire region.
+  if(addr != vma->addr &&
+     end != vma->addr + vma->length)
+    return -1;
+
+  result = mmap_unmap(p, vma, addr, len);
+
+  if(addr == vma->addr &&
+     end == vma->addr + vma->length){
+    // The entire VMA is unmapped.
+    fileclose(vma->file);
+    memset(vma, 0, sizeof(*vma));
+  } else if(addr == vma->addr){
+    // Unmap pages from the beginning of the VMA.
+    vma->addr += len;
+    vma->offset += len;
+    vma->length -= len;
+  } else {
+    // Unmap pages from the end of the VMA.
+    vma->length -= len;
+  }
+
+  return result;
 }

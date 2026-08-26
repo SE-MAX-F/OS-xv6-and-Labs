@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -15,6 +19,84 @@ extern char trampoline[], uservec[], userret[];
 void kernelvec();
 
 extern int devintr();
+
+static int
+mmap_fault(uint64 va, uint64 scause)
+{
+  struct proc *p = myproc();
+  struct vma *vma = 0;
+  uint64 page = PGROUNDDOWN(va);
+  pte_t *pte;
+  char *mem;
+  uint offset;
+  int perm;
+  int i;
+  int n;
+
+  // Find the VMA containing the faulting address.
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].used &&
+       page >= p->vmas[i].addr &&
+       page < p->vmas[i].addr + p->vmas[i].length){
+      vma = &p->vmas[i];
+      break;
+    }
+  }
+
+  if(vma == 0)
+    return -1;
+
+  // Check whether the access type matches the VMA permissions.
+  if(scause == 12 && !(vma->prot & PROT_EXEC))
+    return -1;
+
+  if(scause == 13 && !(vma->prot & PROT_READ))
+    return -1;
+
+  if(scause == 15 && !(vma->prot & PROT_WRITE))
+    return -1;
+
+  // Reject faults on an already mapped page.
+  pte = walk(p->pagetable, page, 0);
+  if(pte != 0 && (*pte & PTE_V))
+    return -1;
+
+  mem = kalloc();
+  if(mem == 0)
+    return -1;
+
+  // Zero-fill the part of the page beyond the end of the file.
+  memset(mem, 0, PGSIZE);
+
+  offset = (uint)(vma->offset + (page - vma->addr));
+
+  ilock(vma->file->ip);
+  n = readi(vma->file->ip, 0, (uint64)mem, offset, PGSIZE);
+  iunlock(vma->file->ip);
+
+  if(n < 0){
+    kfree(mem);
+    return -1;
+  }
+
+  perm = PTE_U;
+
+  if(vma->prot & PROT_READ)
+    perm |= PTE_R;
+
+  if(vma->prot & PROT_WRITE)
+    perm |= PTE_W;
+
+  if(vma->prot & PROT_EXEC)
+    perm |= PTE_X;
+
+  if(mappages(p->pagetable, page, PGSIZE, (uint64)mem, perm) < 0){
+    kfree(mem);
+    return -1;
+  }
+
+  return 0;
+}
 
 void
 trapinit(void)
@@ -37,6 +119,7 @@ void
 usertrap(void)
 {
   int which_dev = 0;
+  uint64 scause = r_scause();
 
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
@@ -50,7 +133,7 @@ usertrap(void)
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  if(scause == 8){
     // system call
 
     if(p->killed)
@@ -65,6 +148,9 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(scause == 12 || scause == 13 || scause == 15){
+    if(mmap_fault(r_stval(), scause) < 0)
+      p->killed = 1;
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
