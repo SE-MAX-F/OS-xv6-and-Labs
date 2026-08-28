@@ -100,6 +100,17 @@ bgetzero(uint dev, uint blockno)
   return b;
 }
 
+// Get a locked buffer for a newly allocated block without reading old contents.
+struct buf*
+bgetnew(uint dev, uint blockno)
+{
+  struct buf *b;
+
+  b = bget(dev, blockno);
+  b->valid = 1;
+  return b;
+}
+
 // Return a locked buf with the contents of the indicated block.
 struct buf*
 bread(uint dev, uint blockno)

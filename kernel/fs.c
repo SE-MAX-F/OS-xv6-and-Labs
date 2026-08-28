@@ -60,7 +60,7 @@ bzero(int dev, int bno)
 
 // Blocks.
 
-// Allocate a zeroed disk block.
+// Allocate a disk block.
 static uint
 balloc(uint dev)
 {
@@ -97,7 +97,6 @@ balloc(uint dev)
           if(balloc_hint >= sb.size)
             balloc_hint = 0;
 
-          bzero(dev, b + bi);
           return b + bi;
         }
       }
@@ -399,28 +398,42 @@ iunlockput(struct inode *ip)
 // Return the disk block address of the nth block in inode ip.
 // If there is no such block, bmap allocates one.
 static uint
-bmap(struct inode *ip, uint bn)
+bmap(struct inode *ip, uint bn, int *allocated)
 {
   uint addr, *a;
   struct buf *bp;
 
+  if(allocated)
+    *allocated = 0;
+
   if(bn < NDIRECT){
-    if((addr = ip->addrs[bn]) == 0)
+    if((addr = ip->addrs[bn]) == 0){
       ip->addrs[bn] = addr = balloc(ip->dev);
+      if(allocated)
+        *allocated = 1;
+      else
+        bzero(ip->dev, addr);
+    }
     return addr;
   }
 
   bn -= NDIRECT;
 
   if(bn < NINDIRECT){
-    if((addr = ip->addrs[NDIRECT]) == 0)
+    if((addr = ip->addrs[NDIRECT]) == 0){
       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+      bzero(ip->dev, addr);
+    }
 
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
 
     if((addr = a[bn]) == 0){
       a[bn] = addr = balloc(ip->dev);
+      if(allocated)
+        *allocated = 1;
+      else
+        bzero(ip->dev, addr);
       log_write(bp);
     }
 
@@ -431,15 +444,19 @@ bmap(struct inode *ip, uint bn)
   bn -= NINDIRECT;
 
   if(bn < NDINDIRECT){
-    if((addr = ip->addrs[NDIRECT + 1]) == 0)
+    if((addr = ip->addrs[NDIRECT + 1]) == 0){
       ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
+      bzero(ip->dev, addr);
+    }
 
     // Read the doubly-indirect block.
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
 
     if((addr = a[bn / NINDIRECT]) == 0){
-      a[bn / NINDIRECT] = addr = balloc(ip->dev);
+      addr = balloc(ip->dev);
+      bzero(ip->dev, addr);
+      a[bn / NINDIRECT] = addr;
       log_write(bp);
     }
 
@@ -451,6 +468,10 @@ bmap(struct inode *ip, uint bn)
 
     if((addr = a[bn % NINDIRECT]) == 0){
       a[bn % NINDIRECT] = addr = balloc(ip->dev);
+      if(allocated)
+        *allocated = 1;
+      else
+        bzero(ip->dev, addr);
       log_write(bp);
     }
 
@@ -547,7 +568,7 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
     n = ip->size - off;
 
   for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
-    bp = bread(ip->dev, bmap(ip, off/BSIZE));
+    bp = bread(ip->dev, bmap(ip, off/BSIZE, 0));
     m = min(n - tot, BSIZE - off%BSIZE);
     if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) {
       brelse(bp);
@@ -569,7 +590,8 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 int
 writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
 {
-  uint tot, m;
+  uint tot, m, addr;
+  int allocated;
   struct buf *bp;
 
   if(off > ip->size || off + n < off)
@@ -578,9 +600,23 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
     return -1;
 
   for(tot=0; tot<n; tot+=m, off+=m, src+=m){
-    bp = bread(ip->dev, bmap(ip, off/BSIZE));
     m = min(n - tot, BSIZE - off%BSIZE);
+    addr = bmap(ip, off/BSIZE, &allocated);
+    if(allocated){
+      if(m == BSIZE && off % BSIZE == 0)
+        bp = bgetnew(ip->dev, addr);
+      else
+        bp = bgetzero(ip->dev, addr);
+    } else {
+      bp = bread(ip->dev, addr);
+    }
+
     if(either_copyin(bp->data + (off % BSIZE), user_src, src, m) == -1) {
+      if(allocated){
+        if(m == BSIZE && off % BSIZE == 0)
+          memset(bp->data, 0, BSIZE);
+        log_write(bp);
+      }
       brelse(bp);
       break;
     }

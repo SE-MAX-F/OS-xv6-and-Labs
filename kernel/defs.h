@@ -12,6 +12,7 @@ struct superblock;
 // bio.c
 void            binit(void);
 struct buf*     bread(uint, uint);
+struct buf*     bgetnew(uint, uint);
 struct buf*     bgetzero(uint, uint);
 void            brelse(struct buf*);
 void            bwrite(struct buf*);
